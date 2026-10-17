@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XO Online</title>
+<style>
+:root{--bg:#f6f5f1;--card:#fff;--ink:#1d1d1b;--mut:#6b6a64;--line:#dcdad2;--x:#d9480f;--o:#1971c2;--acc:#1d1d1b;--accink:#fff;--win:#fff3bf}
+@media (prefers-color-scheme:dark){:root{--bg:#17171a;--card:#222226;--ink:#f1f0ea;--mut:#a09f98;--line:#37373d;--x:#ff8c5a;--o:#74b4ff;--acc:#f1f0ea;--accink:#17171a;--win:#4a4220}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;justify-content:center}
+main{width:100%;max-width:420px;padding:24px 18px}
+h1{font-size:28px;margin:0 0 4px;letter-spacing:-.5px}
+h1 span:first-child{color:var(--x)}h1 span:last-child{color:var(--o)}
+.sub{color:var(--mut);margin:0 0 20px;font-size:15px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:14px}
+button{font:inherit;cursor:pointer;border:0;border-radius:12px;padding:13px 16px;background:var(--acc);color:var(--accink);font-weight:600;width:100%}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:default}
+input{font:inherit;width:100%;padding:13px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);text-transform:uppercase;letter-spacing:4px;text-align:center;font-weight:700;margin-bottom:10px}
+.or{text-align:center;color:var(--mut);font-size:13px;margin:12px 0}
+.code{font-size:34px;letter-spacing:8px;font-weight:800;text-align:center;margin:6px 0}
+.status{text-align:center;font-size:18px;font-weight:600;margin:4px 0 14px;min-height:26px}
+.board{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
+.cell{aspect-ratio:1;border-radius:14px;background:var(--bg);border:1px solid var(--line);font-size:clamp(44px,16vw,72px);font-weight:800;padding:0;color:var(--ink);display:flex;align-items:center;justify-content:center}
+.cell.X{color:var(--x)}.cell.O{color:var(--o)}.cell.win{background:var(--win)}
+.cell:disabled{opacity:1}
+.hide{display:none}
+.mut{color:var(--mut);font-size:13px;text-align:center}
+.score{display:flex;justify-content:space-between;font-weight:600;margin-bottom:10px}
+.err{color:var(--x);text-align:center;margin:0 0 12px}
+</style>
+</head>
+<body>
+<main>
+<h1><span>X</span><span>O</span> Online</h1>
+<p class="sub">Play with a friend from anywhere.</p>
+<p id="err" class="err hide"></p>
+
+<section id="lobby" class="card">
+  <button id="create" disabled>Create new game</button>
+  <div class="or">or join a friend's game</div>
+  <input id="codeIn" maxlength="4" placeholder="CODE" autocomplete="off">
+  <button id="join" class="ghost" disabled>Join game</button>
+</section>
+
+<section id="game" class="hide">
+  <div class="card">
+    <div class="mut">Game code — share it with your friend</div>
+    <div class="code" id="code"></div>
+    <button id="copy" class="ghost" style="margin-bottom:12px">Copy invite link</button>
+    <div class="score"><span style="color:var(--x)" id="sx"></span><span id="you" class="mut"></span><span style="color:var(--o)" id="so"></span></div>
+    <div class="status" id="status"></div>
+    <div class="board" id="board"></div>
+    <button id="again" class="hide">Play again</button>
+  </div>
+  <button id="leave" class="ghost">Leave game</button>
+</section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let ws, state = null, pendingCode = new URLSearchParams(location.search).get('code');
+
+function err(t){ const e=$('err'); if(!t){e.classList.add('hide');return} e.textContent=t; e.classList.remove('hide'); }
+function connect(){
+  ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
+  ws.onopen = () => {
+    err(''); $('create').disabled=false; $('join').disabled=false;
+    if(pendingCode && !state){ ws.send(JSON.stringify({type:'join',code:pendingCode})); pendingCode=null; }
+  };
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if(m.type==='error') err(m.message);
+    else if(m.type==='left') err('Your friend left the game.');
+    else if(m.type==='state'){ err(''); state=m; render(); }
+  };
+  ws.onclose = () => {
+    $('create').disabled=true; $('join').disabled=true;
+    if(state){ err('Connection lost. Reload the page to start a new game.'); }
+    else { err('Connecting…'); setTimeout(connect,1500); }
+  };
+}
+function send(o){ if(ws.readyState===1) ws.send(JSON.stringify(o)); }
+
+function render(){
+  const s = state;
+  $('lobby').classList.add('hide'); $('game').classList.remove('hide');
+  $('code').textContent = s.code;
+  $('sx').textContent = 'X: '+s.scores.X; $('so').textContent = 'O: '+s.scores.O;
+  $('you').textContent = 'You are '+s.you;
+  const bd = $('board'); bd.innerHTML='';
+  s.board.forEach((v,i)=>{
+    const b=document.createElement('button');
+    b.className='cell '+v+(s.line&&s.line.includes(i)?' win':'');
+    b.textContent=v; b.setAttribute('aria-label','Cell '+(i+1)+(v?' '+v:''));
+    b.disabled = !!v || !!s.winner || !s.full || s.turn!==s.you;
+    b.onclick = () => send({type:'move',index:i});
+    bd.appendChild(b);
+  });
+  let t;
+  if(!s.full) t='Waiting for your friend to join…';
+  else if(s.winner==='draw') t='It’s a draw';
+  else if(s.winner) t = s.winner===s.you ? 'You win! 🎉' : 'You lose';
+  else t = s.turn===s.you ? 'Your turn' : 'Waiting for '+s.turn+'…';
+  $('status').textContent=t;
+  $('again').classList.toggle('hide', !s.winner);
+}
+
+$('create').onclick = () => send({type:'create'});
+$('join').onclick = () => { const c=$('codeIn').value.trim(); if(c.length===4) send({type:'join',code:c}); else err('Enter the 4-character code.'); };
+$('again').onclick = () => send({type:'again'});
+$('leave').onclick = () => location.href = location.pathname;
+$('copy').onclick = async () => {
+  const link = location.origin+location.pathname+'?code='+state.code;
+  try { await navigator.clipboard.writeText(link); $('copy').textContent='Copied!'; }
+  catch { prompt('Copy this link:', link); }
+  setTimeout(()=>$('copy').textContent='Copy invite link',1500);
+};
+connect();
+</script>
+</body>
+</html>
