@@ -55,6 +55,11 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
 .chatrow{display:flex;gap:8px}
 .chatrow input{margin:0}
 .chatrow button{width:auto}
+.row2{display:flex;gap:8px;margin-bottom:12px}
+.slots{display:flex;flex-direction:column;gap:8px;margin:6px 0 14px}
+.slot{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--bg);font-weight:600}
+.slot .tag{font-size:12px;color:var(--mut);font-weight:500}
+.slot.empty{border-style:dashed;color:var(--mut);font-weight:500}
 @media (prefers-reduced-motion:reduce){.cell.pop,.cell.win,.conf{animation:none}}
 </style>
 </head>
@@ -69,7 +74,6 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
 
 <section id="lobby" class="card">
   <input id="nameIn" maxlength="16" placeholder="Your name" autocomplete="nickname">
-  <label class="chk"><input type="checkbox" id="timedIn"> ⏱ Timed mode (10 seconds per move)</label>
   <button id="create" disabled>Create new game</button>
   <div class="or">or join a friend's game</div>
   <input id="codeIn" maxlength="4" placeholder="CODE" autocomplete="off">
@@ -77,7 +81,16 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
 </section>
 
 <section id="game" class="hide">
-  <div class="card">
+  <div class="card hide" id="room">
+    <div class="mut">Lobby code — say it or text it to your friend</div>
+    <div class="code" id="rcode"></div>
+    <div class="row2"><button id="rcopy" class="ghost">Copy code</button><button id="rshare" class="ghost">Share invite</button></div>
+    <div class="slots"><div class="slot" id="slotX"></div><div class="slot" id="slotO"></div></div>
+    <label class="chk"><input type="checkbox" id="rtimed"> ⏱ Timed mode (10 seconds per move)</label>
+    <button id="start">Start match</button>
+    <div class="mut" id="rwait" style="margin-top:8px"></div>
+  </div>
+  <div class="card" id="match">
     <div class="mut">Game code — share it with your friend</div>
     <div class="code" id="code"></div>
     <button id="copy" class="ghost" style="margin-bottom:12px">Copy invite link</button>
@@ -87,6 +100,7 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
     <div id="timerWrap" class="hide"><div class="timer"><div id="tbar"></div></div><div class="tlabel" id="tlabel"></div></div>
     <div class="board" id="board"></div>
     <button id="again" class="hide">Ask for rematch</button>
+    <button id="tolobby" class="ghost hide" style="margin-top:8px">Back to lobby</button>
   </div>
   <div class="chat">
     <div id="chatlog" aria-live="polite"></div>
@@ -134,6 +148,7 @@ function sfx(kind) {
     else if (kind === 'lose') { tone(330, 0, .25, 'triangle'); tone(262, .25, .4, 'triangle'); }
     else if (kind === 'draw') { tone(392, 0, .2); tone(392, .22, .3); }
     else if (kind === 'chat') tone(880, 0, .08, 'sine', .08);
+    else if (kind === 'start') [392, 523, 659].forEach((f, i) => tone(f, i * .1, .18, 'triangle'));
     else if (kind === 'tick') tone(1000, 0, .06, 'square', .05);
   } catch {}
 }
@@ -190,6 +205,10 @@ function render() {
   const oppName = s.names[opp] || 'your friend';
   const live = ws.readyState === 1;
   showGame(true);
+  $('room').classList.toggle('hide', !!s.started);
+  $('match').classList.toggle('hide', !s.started);
+  if (!s.started) renderRoom(s, me);
+  $('tolobby').classList.toggle('hide', !(s.winner && me === 'X'));
   $('code').textContent = s.code;
   $('sx').textContent = (s.names.X || '…') + ' (X): ' + s.scores.X;
   $('so').textContent = (s.names.O || '…') + ' (O): ' + s.scores.O;
@@ -229,6 +248,7 @@ function render() {
   if (same) {
     newIdx.forEach(i => sfx(s.board[i]));
     if (!prev.full && s.full) sfx('join');
+    if (!prev.started && s.started) sfx('start');
     if (s.winner && !prev.winner) {
       if (s.winner === 'draw') sfx('draw');
       else if (s.winner === me) { sfx('win'); confetti(); }
@@ -236,6 +256,45 @@ function render() {
     }
   }
 }
+
+/* ---------- room lobby ---------- */
+function renderRoom(s, me) {
+  const host = me === 'X', live = ws.readyState === 1;
+  $('rcode').textContent = s.code;
+  const fill = (el, mark, label) => {
+    el.innerHTML = '';
+    const n = document.createElement('span'), t = document.createElement('span');
+    t.className = 'tag';
+    const name = s.names[mark];
+    if (name) { n.textContent = (s.online[mark] ? '🟢 ' : '⚪ ') + name + (mark === me ? ' (you)' : ''); t.textContent = label; el.classList.remove('empty'); }
+    else { n.textContent = 'Waiting for friend to join…'; el.classList.add('empty'); }
+    el.appendChild(n); el.appendChild(t);
+  };
+  fill($('slotX'), 'X', 'Host'); fill($('slotO'), 'O', 'Player');
+  $('rtimed').checked = !!s.timed;
+  $('rtimed').disabled = !host || !live;
+  $('start').classList.toggle('hide', !host);
+  $('start').disabled = !s.full || !s.online.O || !live;
+  $('rwait').textContent = host
+    ? (s.full ? 'Everyone is here. Start when you’re ready.' : 'Share the code, then wait for your friend.')
+    : 'Waiting for the host to start the match…';
+}
+$('start').onclick = () => send({ type: 'start' });
+$('rtimed').onchange = () => send({ type: 'settimed', timed: $('rtimed').checked });
+$('tolobby').onclick = () => send({ type: 'tolobby' });
+$('rcopy').onclick = async () => {
+  try { await navigator.clipboard.writeText(state.code); $('rcopy').textContent = 'Copied!'; }
+  catch { prompt('Your code:', state.code); }
+  setTimeout(() => $('rcopy').textContent = 'Copy code', 1500);
+};
+$('rshare').onclick = async () => {
+  const link = location.origin + location.pathname + '?code=' + state.code;
+  const text = 'Join my XO game! Code: ' + state.code;
+  if (navigator.share) { try { await navigator.share({ title: 'XO Online', text, url: link }); } catch {} return; }
+  try { await navigator.clipboard.writeText(text + ' ' + link); $('rshare').textContent = 'Copied!'; }
+  catch { prompt('Send this to your friend:', text + ' ' + link); }
+  setTimeout(() => $('rshare').textContent = 'Share invite', 1500);
+};
 
 /* ---------- chat + timer ---------- */
 function addMsg(m) {
@@ -273,7 +332,7 @@ $('chatIn').onkeydown = e => { if (e.key === 'Enter') sendChat(); };
 
 /* ---------- buttons ---------- */
 function needName() { if (!myName()) { err('Enter your name first.'); $('nameIn').focus(); return true; } store.set('xo_name', myName()); return false; }
-$('create').onclick = () => { if (!needName()) send({ type: 'create', pid, name: myName(), timed: $('timedIn').checked }); };
+$('create').onclick = () => { if (!needName()) send({ type: 'create', pid, name: myName() }); };
 $('join').onclick = () => {
   if (needName()) return;
   const c = $('codeIn').value.trim().toUpperCase();
