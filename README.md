@@ -1,17 +1,18 @@
-# XO Online
+# kalakal.in
 
-Two-player tic-tac-toe that works in any browser. Node.js + WebSockets, no database.
+Multiplayer game site: make a lobby, share the 4-letter code, the host picks a game
+(XO or LUDO) and starts the match. Node.js + WebSockets, no database.
 
 ## Run on your computer
     npm install
     npm start
-Open http://localhost:3000 in two browser tabs to test.
+Open http://localhost:3000 in two browser tabs.
 
-## Put it online (free, e.g. Render)
-1. Upload this folder to a GitHub repository.
-2. On render.com: New > Web Service > connect the repo.
-3. Build command: `npm install`   Start command: `npm start`
-4. Deploy. Render gives you a public https URL — send it to your friends.
+## Put it online
+Upload this folder's contents to your GitHub repo (server.js, package.json, README.md and the public folder),
+then deploy on Render: Build command `npm install`, Start command `npm start`.
 
-Railway, Fly.io and Glitch work the same way (they set the PORT automatically).
-Note: free plans may sleep when idle, so the first load can take ~30 seconds.
+## Use your own domain (kalakal.in)
+1. Buy the domain from any registrar.
+2. In Render: your service > Settings > Custom Domains > Add `kalakal.in`.
+3. Add the DNS records Render shows you at your registrar, then wait for HTTPS to turn on.
