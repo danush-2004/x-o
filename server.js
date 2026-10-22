@@ -99,7 +99,6 @@ function xoApply(r, mark, i) {
   if (x.winner) clearTurnTimer(r); else startTurnTimer(r);
   broadcast(r);
 }
-// time ran out: a random free square is played (change to skip the turn if you prefer)
 function autoMoveXO(r) {
   r.tt = null;
   const x = r.xo;
@@ -111,9 +110,7 @@ function autoMoveXO(r) {
   xoApply(r, mark, empty[crypto.randomInt(empty.length)]);
 }
 
-/* ================= LUDO =================
-   seats 0..3 = red, green, yellow, blue. Piece progress: -1 base, 0..50 main track,
-   51..55 home column, 56 home. Track has 52 squares; seat s starts at square s*13. */
+/* ================= LUDO ================= */
 const START = [0, 13, 26, 39];
 const SAFE = new Set([0, 13, 26, 39, 8, 21, 34, 47]);
 const trackIdx = (seat, p) => (START[seat] + p) % 52;
@@ -121,7 +118,7 @@ const lname = (r, seat) => r.players[r.ludo.seats[seat]].name;
 
 function startLudo(r) {
   const n = r.players.length;
-  const order = n === 2 ? [0, 2] : [0, 1, 2, 3].slice(0, n);   // 2 players sit opposite each other
+  const order = n === 2 ? [0, 2] : [0, 1, 2, 3].slice(0, n);
   const seats = [-1, -1, -1, -1];
   order.forEach((seat, k) => { seats[seat] = k; });
   r.ludo = { seats, pieces: [0, 1, 2, 3].map(() => [-1, -1, -1, -1]), turn: order[0], dice: null, rolls: 0,
@@ -189,7 +186,7 @@ function doMove(r, k) {
   }
   g.msg = hits.length ? name + ' captured ' + [...new Set(hits.map(([s]) => lname(r, s)))].join(', ') + '!'
     : np === 56 ? name + ' brought a piece home!' : '';
-  const bonus = g.dice === 6 || hits.length > 0 || np === 56;   // extra roll
+  const bonus = g.dice === 6 || hits.length > 0 || np === 56;
   if (!bonus) { g.turn = nextSeat(g); g.sixes = 0; }
   g.phase = 'roll';
   broadcast(r); scheduleLudo(r);
@@ -200,7 +197,6 @@ function passTurn(r) {
   g.turn = nextSeat(g); g.sixes = 0; g.phase = 'roll'; g.legal = [];
   broadcast(r); scheduleLudo(r);
 }
-// auto-play: single legal move, "no move" passes, and offline/left players are played by a simple bot
 function scheduleLudo(r) {
   clearTimeout(r.lt); r.lt = null;
   const g = r.ludo;
@@ -233,7 +229,6 @@ function attach(r, idx, ws) {
   send(ws, { type: 'chatlog', log: r.chat });
   if (r.started && r.game === 'ludo') scheduleLudo(r);
 }
-// a player left on purpose, or stayed disconnected past the grace period
 function playerGone(r, idx) {
   const p = r.players[idx];
   if (!p) return;
@@ -331,7 +326,7 @@ wss.on('connection', (ws) => {
       if (!msg.data) return;
       r.players.forEach((p, i) => {
         if (i !== me && p.ws && p.ws.readyState === 1) {
-          send(p.ws, { type: 'voice', from: me, data: msg.data });
+          send(p.ws, { type: 'voice', from: me, data: msg.data, mime: msg.mime });
         }
       });
     } else if (r.started && r.game === 'xo' && r.xo) {
@@ -364,7 +359,7 @@ wss.on('connection', (ws) => {
     const p = r.players[idx];
     if (!p || p.ws !== ws) return;
     p.ws = null;
-    if (r.game === 'xo') clearTurnTimer(r);          // pause the XO clock while someone is offline
+    if (r.game === 'xo') clearTurnTimer(r);
     p.timer = setTimeout(() => playerGone(r, r.players.indexOf(p)), GRACE_MS);
     broadcast(r);
     if (r.started && r.game === 'ludo') scheduleLudo(r);
