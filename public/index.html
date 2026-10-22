@@ -109,7 +109,6 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
 </section>
 
 <section id="inroom" class="hide">
-
   <!-- lobby -->
   <div class="card hide" id="roomView">
     <div class="mut">Lobby code. Say it or text it to your friends.</div>
@@ -135,7 +134,7 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
     <div id="xtimerWrap" class="hide"><div class="timer"><div id="xtbar"></div></div><div class="tlabel" id="xtlabel"></div></div>
     <div class="board" id="xboard"></div>
     <button id="xagain" class="hide">Ask for rematch</button>
-    <button id="xtolobby" class="ghost hide" style="margin-top:8px">Back to lobby</button>
+    <button id="xtolobby" class="ghost hide" style="margin-top:8px">Cancel match</button>
   </div>
 
   <!-- LUDO -->
@@ -145,7 +144,7 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
     <div class="lctl"><div id="die" aria-live="polite">🎲</div><button id="roll" disabled>Roll dice</button></div>
     <div class="status" id="lstatus"></div>
     <div class="mut" id="lmsg" style="min-height:18px;margin-bottom:8px"></div>
-    <button id="ltolobby" class="ghost hide">Back to lobby</button>
+    <button id="ltolobby" class="ghost hide">Cancel match</button>
   </div>
 
   <div class="chat">
@@ -241,7 +240,7 @@ function connect() {
     else if (m.type === 'state') { err(''); store.set('kk_code', m.code); clockOffset = m.now - Date.now(); prev = state; state = m; render(); }
     else if (m.type === 'chatlog') { $('chatlog').innerHTML = ''; m.log.forEach(addMsg); }
     else if (m.type === 'chat') { addMsg(m.msg); if (state && !m.msg.sys && m.msg.from !== state.you) sfx('chat'); }
-    else if (m.type === 'voice') { if (!muted) playVoiceData(m.data); }
+    else if (m.type === 'voice') { if (!muted) playVoiceData(m.data, m.mime); }
   };
   ws.onclose = () => {
     $('conn').classList.remove('hide');
@@ -355,7 +354,11 @@ function renderXO() {
   if (x.rematch[me]) { ag.textContent = 'Waiting for ' + oppName + '…'; ag.disabled = true; }
   else if (x.rematch[opp]) { ag.textContent = oppName + ' wants a rematch. Accept'; ag.disabled = !live; }
   else { ag.textContent = 'Ask for rematch'; ag.disabled = !live; }
-  $('xtolobby').classList.toggle('hide', !(x.winner && s.you === s.host));
+  
+  const isHost = s.you === s.host;
+  $('xtolobby').classList.toggle('hide', !isHost);
+  $('xtolobby').textContent = x.winner ? 'Back to lobby' : 'Cancel match';
+  
   if (same) {
     newIdx.forEach(i => sfx(x.board[i]));
     if (x.winner && !prev.xo.winner) {
@@ -487,7 +490,6 @@ function renderLudo() {
     chip.appendChild(document.createTextNode(pl.name + (pi === s.you ? ' (you)' : '') + (pl.left ? ' · left' : !pl.online ? ' · offline' : '') + '  🏁' + home + '/4'));
     box.appendChild(chip);
   }
-  // pieces: position + stacking offsets
   const pos = {}, groups = {};
   for (let seat = 0; seat < 4; seat++) {
     if (g.seats[seat] < 0) continue;
@@ -519,7 +521,11 @@ function renderLudo() {
   else t = nm(g.turn) + '’s turn (' + CNAME[g.turn] + ')';
   $('lstatus').textContent = t;
   $('lmsg').textContent = g.msg || '';
-  $('ltolobby').classList.toggle('hide', !(g.winner !== null && s.you === s.host));
+  
+  const isHost = s.you === s.host;
+  $('ltolobby').classList.toggle('hide', !isHost);
+  $('ltolobby').textContent = g.winner !== null ? 'Back to lobby' : 'Cancel match';
+  
   const same = prev && prev.ludo && prev.started && prev.code === s.code;
   if (same) {
     const a = prev.ludo.pieces.flat(), b = g.pieces.flat();
@@ -561,41 +567,53 @@ $('leave').onclick = () => { send({ type: 'leave' }); resetToEntry(); };
 
 /* ---------- Voice Chat Logic ---------- */
 let myStream = null;
-let myRecorder = null;
+let micActive = false;
+let micLoop = null;
 let audioQueue = [];
 let isPlayingVoice = false;
 
-// Request mic access and send audio chunks
+// Request mic access and send correctly formatted standalone chunks
 $('micBtn').onclick = async () => {
-  if (myStream) {
-    // Turn off mic
-    myStream.getTracks().forEach(t => t.stop());
+  if (micActive) {
+    micActive = false;
+    clearInterval(micLoop);
+    if (myStream) myStream.getTracks().forEach(t => t.stop());
     myStream = null;
-    if (myRecorder) myRecorder.stop();
     $('micBtn').classList.remove('active');
     $('micBtn').textContent = '🎤';
     return;
   }
   
   try {
-    // Turn on mic
     myStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micActive = true;
     $('micBtn').classList.add('active');
     $('micBtn').textContent = '🎙️';
     
-    myRecorder = new MediaRecorder(myStream);
-    myRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0 && ws && ws.readyState === 1 && state) {
-        const reader = new FileReader();
-        reader.readAsDataURL(e.data);
-        reader.onloadend = () => {
-          const base64 = reader.result.split(',')[1];
-          send({ type: 'voice', data: base64 });
-        };
-      }
+    // We create complete, separate files instead of one continuous stream 
+    // to bypass missing header errors on receiving clients.
+    const captureSnippet = () => {
+      if (!micActive || !myStream) return;
+      const rec = new MediaRecorder(myStream);
+      
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0 && ws && ws.readyState === 1 && state) {
+          const reader = new FileReader();
+          reader.readAsDataURL(e.data);
+          reader.onloadend = () => {
+            // Forward the proper MIME type specific to the user's browser (e.g. Safari vs Chrome)
+            send({ type: 'voice', data: reader.result.split(',')[1], mime: rec.mimeType });
+          };
+        }
+      };
+      
+      rec.start();
+      // Stop after 1.5s to generate the complete file, then restart loop
+      setTimeout(() => { if (rec.state === 'recording') rec.stop(); }, 1500);
     };
-    // Send an audio chunk every 500ms
-    myRecorder.start(500); 
+    
+    captureSnippet();
+    micLoop = setInterval(captureSnippet, 1500);
   } catch (err) {
     console.error("Mic access denied or unavailable", err);
     alert("Microphone access is required for voice chat.");
@@ -603,15 +621,15 @@ $('micBtn').onclick = async () => {
 };
 
 // Queue and play incoming audio chunks sequentially
-function playVoiceData(base64) {
+function playVoiceData(base64, mimeType) {
   const binaryString = atob(base64);
   const audioData = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) {
     audioData[i] = binaryString.charCodeAt(i);
   }
   
-  // Create an audio blob
-  const blob = new Blob([audioData], { type: 'audio/webm; codecs=opus' });
+  // Use the sender's actual MIME type, otherwise fallback to webm
+  const blob = new Blob([audioData], { type: mimeType || 'audio/webm' });
   const url = URL.createObjectURL(blob);
   audioQueue.push(url);
   processAudioQueue();
@@ -625,11 +643,20 @@ function processAudioQueue() {
   const audio = new Audio(url);
   
   audio.play().catch(() => {}); // Catch autoplay restrictions
+  
   audio.onended = () => {
     URL.revokeObjectURL(url);
     isPlayingVoice = false;
     processAudioQueue(); // Play next chunk in queue
   };
+  
+  // Fallback timeout in case onended doesn't fire naturally
+  setTimeout(() => {
+    if (isPlayingVoice) {
+      isPlayingVoice = false;
+      processAudioQueue();
+    }
+  }, 2000);
 }
 
 connect();
