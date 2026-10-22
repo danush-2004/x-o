@@ -19,6 +19,8 @@ button{font:inherit;cursor:pointer;border:0;border-radius:12px;padding:13px 16px
 button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
 button:disabled{opacity:.5;cursor:default}
 button#mute{width:auto;padding:8px 12px;font-size:18px;background:transparent;border:1px solid var(--line);color:var(--ink)}
+button#micBtn {width:auto;padding:8px 12px;font-size:18px;background:transparent;border:1px solid var(--line);color:var(--ink)}
+button#micBtn.active {background:var(--win);border-color:var(--o)}
 input{font:inherit;width:100%;padding:13px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);margin-bottom:10px}
 input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-weight:700}
 .or{text-align:center;color:var(--mut);font-size:13px;margin:12px 0}
@@ -90,7 +92,10 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
 <main>
 <div class="top">
   <div><h1 class="brand">kalakal<span>.in</span></h1><p class="sub">Play with friends, from anywhere.</p></div>
-  <button id="mute" aria-label="Toggle sound">🔊</button>
+  <div style="display:flex; gap:8px;">
+    <button id="micBtn" class="hide" aria-label="Toggle microphone">🎤</button>
+    <button id="mute" aria-label="Toggle sound">🔊</button>
+  </div>
 </div>
 <p id="conn" class="conn hide">Connection lost. Reconnecting…</p>
 <p id="err" class="err hide"></p>
@@ -236,6 +241,7 @@ function connect() {
     else if (m.type === 'state') { err(''); store.set('kk_code', m.code); clockOffset = m.now - Date.now(); prev = state; state = m; render(); }
     else if (m.type === 'chatlog') { $('chatlog').innerHTML = ''; m.log.forEach(addMsg); }
     else if (m.type === 'chat') { addMsg(m.msg); if (state && !m.msg.sys && m.msg.from !== state.you) sfx('chat'); }
+    else if (m.type === 'voice') { if (!muted) playVoiceData(m.data); }
   };
   ws.onclose = () => {
     $('conn').classList.remove('hide');
@@ -249,6 +255,7 @@ function connect() {
 function render() {
   const s = state;
   showEntry(false);
+  $('micBtn').classList.remove('hide');
   const view = !s.started ? 'room' : s.game;
   $('roomView').classList.toggle('hide', view !== 'room');
   $('xoView').classList.toggle('hide', view !== 'xo');
@@ -551,6 +558,80 @@ $('join').onclick = () => {
   send({ type: 'join', code: c, pid, name: myName() });
 };
 $('leave').onclick = () => { send({ type: 'leave' }); resetToEntry(); };
+
+/* ---------- Voice Chat Logic ---------- */
+let myStream = null;
+let myRecorder = null;
+let audioQueue = [];
+let isPlayingVoice = false;
+
+// Request mic access and send audio chunks
+$('micBtn').onclick = async () => {
+  if (myStream) {
+    // Turn off mic
+    myStream.getTracks().forEach(t => t.stop());
+    myStream = null;
+    if (myRecorder) myRecorder.stop();
+    $('micBtn').classList.remove('active');
+    $('micBtn').textContent = '🎤';
+    return;
+  }
+  
+  try {
+    // Turn on mic
+    myStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    $('micBtn').classList.add('active');
+    $('micBtn').textContent = '🎙️';
+    
+    myRecorder = new MediaRecorder(myStream);
+    myRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0 && ws && ws.readyState === 1 && state) {
+        const reader = new FileReader();
+        reader.readAsDataURL(e.data);
+        reader.onloadend = () => {
+          const base64 = reader.result.split(',')[1];
+          send({ type: 'voice', data: base64 });
+        };
+      }
+    };
+    // Send an audio chunk every 500ms
+    myRecorder.start(500); 
+  } catch (err) {
+    console.error("Mic access denied or unavailable", err);
+    alert("Microphone access is required for voice chat.");
+  }
+};
+
+// Queue and play incoming audio chunks sequentially
+function playVoiceData(base64) {
+  const binaryString = atob(base64);
+  const audioData = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    audioData[i] = binaryString.charCodeAt(i);
+  }
+  
+  // Create an audio blob
+  const blob = new Blob([audioData], { type: 'audio/webm; codecs=opus' });
+  const url = URL.createObjectURL(blob);
+  audioQueue.push(url);
+  processAudioQueue();
+}
+
+function processAudioQueue() {
+  if (isPlayingVoice || audioQueue.length === 0) return;
+  isPlayingVoice = true;
+  
+  const url = audioQueue.shift();
+  const audio = new Audio(url);
+  
+  audio.play().catch(() => {}); // Catch autoplay restrictions
+  audio.onended = () => {
+    URL.revokeObjectURL(url);
+    isPlayingVoice = false;
+    processAudioQueue(); // Play next chunk in queue
+  };
+}
+
 connect();
 </script>
 </body>
