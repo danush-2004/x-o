@@ -327,6 +327,13 @@ wss.on('connection', (ws) => {
       if (!text) return;
       ws.lastChat = now;
       addChat(r, { from: me, name: r.players[me].name, text });
+    } else if (t === 'voice') {
+      if (!msg.data) return;
+      r.players.forEach((p, i) => {
+        if (i !== me && p.ws && p.ws.readyState === 1) {
+          send(p.ws, { type: 'voice', from: me, data: msg.data });
+        }
+      });
     } else if (r.started && r.game === 'xo' && r.xo) {
       const x = r.xo, mark = x.slots[0] === me ? 'X' : x.slots[1] === me ? 'O' : null;
       if (!mark) return;
