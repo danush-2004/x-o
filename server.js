@@ -6,6 +6,7 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(__dirname, 'public');
 const GRACE_MS = 2 * 60 * 1000; // how long a disconnected player can come back
+const TURN_MS = Number(process.env.TURN_MS) || 10000; // time per move in timed mode
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
  
 const server = http.createServer((req, res) => {
@@ -27,6 +28,41 @@ const other = (m) => (m === 'X' ? 'O' : 'X');
 const send = (ws, msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
 const cleanName = (n) => String(n || '').replace(/\s+/g, ' ').trim().slice(0, 16) || 'Player';
  
+/* ----- timed mode: the server owns the clock ----- */
+const clearTurnTimer = (r) => { clearTimeout(r.tt); r.tt = null; r.deadline = null; };
+function startTurnTimer(r) {
+  clearTurnTimer(r);
+  if (!r.timed || r.winner || !(r.p.X && r.p.O && r.p.X.ws && r.p.O.ws)) return;
+  r.deadline = Date.now() + TURN_MS;
+  r.tt = setTimeout(() => autoMove(r), TURN_MS + 150);
+}
+// time ran out: a random free square is played for the player (change this to skip the turn if you prefer)
+function autoMove(r) {
+  r.tt = null;
+  if (r.winner || !r.p.X || !r.p.O) return;
+  const empty = r.board.map((v, k) => (v ? -1 : k)).filter((k) => k >= 0);
+  if (!empty.length) return;
+  const mark = r.turn;
+  addChat(r, { sys: true, text: r.p[mark].name + ' ran out of time, so a random move was played.' });
+  applyMove(r, mark, empty[Math.floor(Math.random() * empty.length)]);
+}
+function applyMove(r, mark, i) {
+  r.board[i] = mark;
+  const res = result(r.board);
+  r.winner = res.winner; r.line = res.line;
+  if (res.winner === 'X' || res.winner === 'O') r.scores[res.winner]++;
+  else r.turn = other(mark);
+  if (r.winner) clearTurnTimer(r); else startTurnTimer(r);
+  broadcast(r);
+}
+ 
+/* ----- chat ----- */
+function addChat(r, entry) {
+  r.chat.push(entry);
+  if (r.chat.length > 50) r.chat.shift();
+  for (const m of ['X', 'O']) if (r.p[m]) send(r.p[m].ws, { type: 'chat', msg: entry });
+}
+ 
 function newCode() {
   const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let s;
@@ -47,7 +83,8 @@ function broadcast(room) {
     if (pl && pl.ws) send(pl.ws, {
       type: 'state', code: room.code, you: m, names, online, full: !!(room.p.X && room.p.O),
       board: room.board, turn: room.turn, winner: room.winner, line: room.line,
-      scores: room.scores, rematch: room.rematch
+      scores: room.scores, rematch: room.rematch,
+      timed: room.timed, deadline: room.deadline, turnMs: TURN_MS, now: Date.now()
     });
   }
 }
@@ -57,6 +94,7 @@ function closeRoom(room, notifyMark) {
     const pl = room.p[m];
     if (!pl) continue;
     clearTimeout(pl.timer);
+    clearTurnTimer(room);
     if (pl.ws) {
       if (m === notifyMark) send(pl.ws, { type: 'left' });
       pl.ws.room = null; pl.ws.mark = null;
@@ -70,7 +108,9 @@ function attach(room, mark, ws) {
   clearTimeout(pl.timer); pl.timer = null;
   if (pl.ws && pl.ws !== ws) { const old = pl.ws; old.room = null; old.mark = null; old.close(); }
   pl.ws = ws; ws.room = room; ws.mark = mark;
+  if (room.timed && !room.deadline) startTurnTimer(room);
   broadcast(room);
+  send(ws, { type: 'chatlog', log: room.chat });
 }
  
 const wss = new WebSocketServer({ server });
@@ -87,7 +127,8 @@ wss.on('connection', (ws) => {
       const room = {
         code: newCode(), p: { X: { ws: null, pid, name: cleanName(msg.name), timer: null }, O: null },
         board: Array(9).fill(''), turn: 'X', winner: null, line: null,
-        scores: { X: 0, O: 0 }, round: 0, rematch: { X: false, O: false }
+        scores: { X: 0, O: 0 }, round: 0, rematch: { X: false, O: false },
+        timed: !!msg.timed, chat: [], tt: null, deadline: null
       };
       rooms.set(room.code, room);
       attach(room, 'X', ws);
@@ -106,12 +147,7 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'move' && ws.room) {
       const r = ws.room, i = msg.index;
       if (!r.p.X || !r.p.O || r.winner || r.turn !== ws.mark || !Number.isInteger(i) || i < 0 || i > 8 || r.board[i]) return;
-      r.board[i] = ws.mark;
-      const res = result(r.board);
-      r.winner = res.winner; r.line = res.line;
-      if (res.winner === 'X' || res.winner === 'O') r.scores[res.winner]++;
-      else r.turn = other(ws.mark);
-      broadcast(r);
+      applyMove(r, ws.mark, i);
  
     } else if (msg.type === 'again' && ws.room && ws.room.winner) {
       const r = ws.room;
@@ -120,8 +156,17 @@ wss.on('connection', (ws) => {
         r.round++; r.board = Array(9).fill(''); r.winner = null; r.line = null;
         r.turn = r.round % 2 ? 'O' : 'X';
         r.rematch = { X: false, O: false };
+        startTurnTimer(r);
       }
       broadcast(r);
+ 
+    } else if (msg.type === 'chat' && ws.room) {
+      const now = Date.now();
+      if (now - (ws.lastChat || 0) < 400) return;
+      const text = String(msg.text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+      if (!text) return;
+      ws.lastChat = now;
+      addChat(ws.room, { mark: ws.mark, name: ws.room.p[ws.mark].name, text });
  
     } else if (msg.type === 'leave' && ws.room) {
       closeRoom(ws.room, other(ws.mark));
@@ -134,6 +179,7 @@ wss.on('connection', (ws) => {
     const pl = room.p[mark];
     if (!pl || pl.ws !== ws) return;
     pl.ws = null;
+    clearTurnTimer(room); // pause the clock while someone is offline
     pl.timer = setTimeout(() => closeRoom(room, other(mark)), GRACE_MS);
     broadcast(room); // tells the other player their friend went offline
   });
@@ -142,4 +188,3 @@ wss.on('connection', (ws) => {
 setInterval(() => wss.clients.forEach((ws) => { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; ws.ping(); }), 30000);
  
 server.listen(PORT, () => console.log('XO Online running on port ' + PORT));
- 
