@@ -1,3 +1,5 @@
+
+Index · HTML
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -10,6 +12,7 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;justify-content:center}
 main{width:100%;max-width:420px;padding:24px 18px}
+.top{display:flex;justify-content:space-between;align-items:flex-start}
 h1{font-size:28px;margin:0 0 4px;letter-spacing:-.5px}
 h1 span:first-child{color:var(--x)}h1 span:last-child{color:var(--o)}
 .sub{color:var(--mut);margin:0 0 20px;font-size:15px}
@@ -17,106 +20,216 @@ h1 span:first-child{color:var(--x)}h1 span:last-child{color:var(--o)}
 button{font:inherit;cursor:pointer;border:0;border-radius:12px;padding:13px 16px;background:var(--acc);color:var(--accink);font-weight:600;width:100%}
 button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
 button:disabled{opacity:.5;cursor:default}
-input{font:inherit;width:100%;padding:13px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);text-transform:uppercase;letter-spacing:4px;text-align:center;font-weight:700;margin-bottom:10px}
+button#mute{width:auto;padding:8px 12px;font-size:18px;background:transparent;border:1px solid var(--line);color:var(--ink)}
+input{font:inherit;width:100%;padding:13px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);margin-bottom:10px}
+input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-weight:700}
 .or{text-align:center;color:var(--mut);font-size:13px;margin:12px 0}
 .code{font-size:34px;letter-spacing:8px;font-weight:800;text-align:center;margin:6px 0}
 .status{text-align:center;font-size:18px;font-weight:600;margin:4px 0 14px;min-height:26px}
 .board{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
 .cell{aspect-ratio:1;border-radius:14px;background:var(--bg);border:1px solid var(--line);font-size:clamp(44px,16vw,72px);font-weight:800;padding:0;color:var(--ink);display:flex;align-items:center;justify-content:center}
-.cell.X{color:var(--x)}.cell.O{color:var(--o)}.cell.win{background:var(--win)}
+.cell.X{color:var(--x)}.cell.O{color:var(--o)}
+.cell.pop{animation:pop .22s ease-out}
+.cell.win{background:var(--win);animation:pulse .8s ease-in-out infinite alternate}
 .cell:disabled{opacity:1}
+@keyframes pop{from{transform:scale(.4);opacity:.2}to{transform:scale(1);opacity:1}}
+@keyframes pulse{from{transform:scale(1)}to{transform:scale(1.07)}}
 .hide{display:none}
 .mut{color:var(--mut);font-size:13px;text-align:center}
-.score{display:flex;justify-content:space-between;font-weight:600;margin-bottom:10px}
+.score{display:flex;justify-content:space-between;gap:8px;font-weight:600;margin-bottom:10px;font-size:15px}
+.score span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .err{color:var(--x);text-align:center;margin:0 0 12px}
+.conn{background:var(--win);text-align:center;padding:8px;border-radius:10px;margin:0 0 12px;font-size:14px}
+.conf{position:fixed;top:-14px;width:8px;height:12px;z-index:9;pointer-events:none;animation:fall 2.2s linear forwards}
+@keyframes fall{to{transform:translateY(110vh) rotate(720deg)}}
+@media (prefers-reduced-motion:reduce){.cell.pop,.cell.win,.conf{animation:none}}
 </style>
 </head>
 <body>
 <main>
-<h1><span>X</span><span>O</span> Online</h1>
-<p class="sub">Play with a friend from anywhere.</p>
+<div class="top">
+  <div><h1><span>X</span><span>O</span> Online</h1><p class="sub">Play with a friend from anywhere.</p></div>
+  <button id="mute" aria-label="Toggle sound">🔊</button>
+</div>
+<p id="conn" class="conn hide">Connection lost. Reconnecting…</p>
 <p id="err" class="err hide"></p>
-
+ 
 <section id="lobby" class="card">
+  <input id="nameIn" maxlength="16" placeholder="Your name" autocomplete="nickname">
   <button id="create" disabled>Create new game</button>
   <div class="or">or join a friend's game</div>
   <input id="codeIn" maxlength="4" placeholder="CODE" autocomplete="off">
   <button id="join" class="ghost" disabled>Join game</button>
 </section>
-
+ 
 <section id="game" class="hide">
   <div class="card">
     <div class="mut">Game code — share it with your friend</div>
     <div class="code" id="code"></div>
     <button id="copy" class="ghost" style="margin-bottom:12px">Copy invite link</button>
-    <div class="score"><span style="color:var(--x)" id="sx"></span><span id="you" class="mut"></span><span style="color:var(--o)" id="so"></span></div>
+    <div class="score"><span style="color:var(--x)" id="sx"></span><span style="color:var(--o)" id="so"></span></div>
+    <div class="mut" id="you" style="margin-bottom:8px"></div>
     <div class="status" id="status"></div>
     <div class="board" id="board"></div>
-    <button id="again" class="hide">Play again</button>
+    <button id="again" class="hide">Ask for rematch</button>
   </div>
   <button id="leave" class="ghost">Leave game</button>
 </section>
 </main>
+ 
 <script>
 const $ = id => document.getElementById(id);
-let ws, state = null, pendingCode = new URLSearchParams(location.search).get('code');
-
-function err(t){ const e=$('err'); if(!t){e.classList.add('hide');return} e.textContent=t; e.classList.remove('hide'); }
-function connect(){
-  ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
+const store = {
+  get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+  del: k => { try { localStorage.removeItem(k); } catch {} }
+};
+let pid = store.get('xo_pid');
+if (!pid) { pid = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now()); store.set('xo_pid', pid); }
+ 
+let ws, state = null, prev = null;
+let pendingCode = (new URLSearchParams(location.search).get('code') || '').toUpperCase().slice(0, 4);
+$('nameIn').value = store.get('xo_name') || '';
+if (pendingCode) $('codeIn').value = pendingCode;
+ 
+/* ---------- sound (synthesised, no files needed) ---------- */
+let actx, muted = store.get('xo_mute') === '1';
+$('mute').textContent = muted ? '🔇' : '🔊';
+$('mute').onclick = () => { muted = !muted; store.set('xo_mute', muted ? '1' : '0'); $('mute').textContent = muted ? '🔇' : '🔊'; };
+function tone(f, at, dur, type = 'sine', vol = .15) {
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.value = f; o.connect(g); g.connect(actx.destination);
+  const t = actx.currentTime + at;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(.001, t + dur);
+  o.start(t); o.stop(t + dur);
+}
+function sfx(kind) {
+  if (muted) return;
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+    if (kind === 'X') tone(520, 0, .12);
+    else if (kind === 'O') tone(390, 0, .12);
+    else if (kind === 'join') { tone(600, 0, .1); tone(800, .1, .15); }
+    else if (kind === 'win') [523, 659, 784, 1047].forEach((f, i) => tone(f, i * .12, .25));
+    else if (kind === 'lose') { tone(330, 0, .25, 'triangle'); tone(262, .25, .4, 'triangle'); }
+    else if (kind === 'draw') { tone(392, 0, .2); tone(392, .22, .3); }
+  } catch {}
+}
+function confetti() {
+  const cols = ['#d9480f', '#1971c2', '#f59f00', '#2f9e44', '#ae3ec9'];
+  for (let i = 0; i < 45; i++) {
+    const s = document.createElement('span');
+    s.className = 'conf';
+    s.style.left = Math.random() * 100 + 'vw';
+    s.style.background = cols[i % cols.length];
+    s.style.animationDelay = Math.random() * .6 + 's';
+    document.body.appendChild(s);
+    setTimeout(() => s.remove(), 3200);
+  }
+}
+ 
+/* ---------- connection ---------- */
+function err(t) { const e = $('err'); if (!t) { e.classList.add('hide'); return; } e.textContent = t; e.classList.remove('hide'); }
+function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+function myName() { return $('nameIn').value.trim(); }
+function showGame(on) { $('game').classList.toggle('hide', !on); $('lobby').classList.toggle('hide', on); }
+function resetToLobby() {
+  store.del('xo_code'); state = null; prev = null; showGame(false);
+  history.replaceState(null, '', location.pathname);
+}
+function connect() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
   ws.onopen = () => {
-    err(''); $('create').disabled=false; $('join').disabled=false;
-    if(pendingCode && !state){ ws.send(JSON.stringify({type:'join',code:pendingCode})); pendingCode=null; }
+    $('conn').classList.add('hide');
+    $('create').disabled = false; $('join').disabled = false;
+    const saved = store.get('xo_code');
+    if (saved) send({ type: 'rejoin', code: saved, pid });
+    else if (pendingCode && myName()) { send({ type: 'join', code: pendingCode, pid, name: myName() }); pendingCode = ''; }
   };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
-    if(m.type==='error') err(m.message);
-    else if(m.type==='left') err('Your friend left the game.');
-    else if(m.type==='state'){ err(''); state=m; render(); }
+    if (m.type === 'error') { if (m.gone) resetToLobby(); err(m.message); }
+    else if (m.type === 'left') { resetToLobby(); err('Your friend left the game.'); }
+    else if (m.type === 'state') { err(''); store.set('xo_code', m.code); prev = state; state = m; render(); }
   };
   ws.onclose = () => {
-    $('create').disabled=true; $('join').disabled=true;
-    if(state){ err('Connection lost. Reload the page to start a new game.'); }
-    else { err('Connecting…'); setTimeout(connect,1500); }
+    $('conn').classList.remove('hide');
+    $('create').disabled = true; $('join').disabled = true;
+    if (state) render();
+    setTimeout(connect, 1500);
   };
 }
-function send(o){ if(ws.readyState===1) ws.send(JSON.stringify(o)); }
-
-function render(){
-  const s = state;
-  $('lobby').classList.add('hide'); $('game').classList.remove('hide');
+ 
+/* ---------- drawing the game ---------- */
+function render() {
+  const s = state, me = s.you, opp = me === 'X' ? 'O' : 'X';
+  const oppName = s.names[opp] || 'your friend';
+  const live = ws.readyState === 1;
+  showGame(true);
   $('code').textContent = s.code;
-  $('sx').textContent = 'X: '+s.scores.X; $('so').textContent = 'O: '+s.scores.O;
-  $('you').textContent = 'You are '+s.you;
-  const bd = $('board'); bd.innerHTML='';
-  s.board.forEach((v,i)=>{
-    const b=document.createElement('button');
-    b.className='cell '+v+(s.line&&s.line.includes(i)?' win':'');
-    b.textContent=v; b.setAttribute('aria-label','Cell '+(i+1)+(v?' '+v:''));
-    b.disabled = !!v || !!s.winner || !s.full || s.turn!==s.you;
-    b.onclick = () => send({type:'move',index:i});
+  $('sx').textContent = (s.names.X || '…') + ' (X): ' + s.scores.X;
+  $('so').textContent = (s.names.O || '…') + ' (O): ' + s.scores.O;
+  $('you').textContent = 'You are ' + me;
+ 
+  const same = prev && prev.code === s.code;
+  const newIdx = new Set();
+  if (same) s.board.forEach((v, i) => { if (v && !prev.board[i]) newIdx.add(i); });
+ 
+  const bd = $('board'); bd.innerHTML = '';
+  s.board.forEach((v, i) => {
+    const b = document.createElement('button');
+    b.className = 'cell ' + v + (newIdx.has(i) ? ' pop' : '') + (s.line && s.line.includes(i) ? ' win' : '');
+    b.textContent = v; b.setAttribute('aria-label', 'Cell ' + (i + 1) + (v ? ' ' + v : ''));
+    b.disabled = !live || !!v || !!s.winner || !s.full || !s.online[opp] || s.turn !== me;
+    b.onclick = () => send({ type: 'move', index: i });
     bd.appendChild(b);
   });
+ 
   let t;
-  if(!s.full) t='Waiting for your friend to join…';
-  else if(s.winner==='draw') t='It’s a draw';
-  else if(s.winner) t = s.winner===s.you ? 'You win! 🎉' : 'You lose';
-  else t = s.turn===s.you ? 'Your turn' : 'Waiting for '+s.turn+'…';
-  $('status').textContent=t;
-  $('again').classList.toggle('hide', !s.winner);
+  if (!s.full) t = 'Waiting for your friend to join…';
+  else if (s.winner === 'draw') t = 'It’s a draw';
+  else if (s.winner) t = s.winner === me ? 'You win! 🎉' : oppName + ' wins';
+  else if (!s.online[opp]) t = oppName + ' disconnected — waiting for them to come back…';
+  else t = s.turn === me ? 'Your turn' : oppName + '’s turn';
+  $('status').textContent = t;
+ 
+  const ag = $('again');
+  ag.classList.toggle('hide', !s.winner);
+  if (s.rematch[me]) { ag.textContent = 'Waiting for ' + oppName + '…'; ag.disabled = true; }
+  else if (s.rematch[opp]) { ag.textContent = oppName + ' wants a rematch — Accept'; ag.disabled = !live; }
+  else { ag.textContent = 'Ask for rematch'; ag.disabled = !live; }
+ 
+  if (same) {
+    newIdx.forEach(i => sfx(s.board[i]));
+    if (!prev.full && s.full) sfx('join');
+    if (s.winner && !prev.winner) {
+      if (s.winner === 'draw') sfx('draw');
+      else if (s.winner === me) { sfx('win'); confetti(); }
+      else sfx('lose');
+    }
+  }
 }
-
-$('create').onclick = () => send({type:'create'});
-$('join').onclick = () => { const c=$('codeIn').value.trim(); if(c.length===4) send({type:'join',code:c}); else err('Enter the 4-character code.'); };
-$('again').onclick = () => send({type:'again'});
-$('leave').onclick = () => location.href = location.pathname;
+ 
+/* ---------- buttons ---------- */
+function needName() { if (!myName()) { err('Enter your name first.'); $('nameIn').focus(); return true; } store.set('xo_name', myName()); return false; }
+$('create').onclick = () => { if (!needName()) send({ type: 'create', pid, name: myName() }); };
+$('join').onclick = () => {
+  if (needName()) return;
+  const c = $('codeIn').value.trim().toUpperCase();
+  if (c.length !== 4) return err('Enter the 4-character code.');
+  send({ type: 'join', code: c, pid, name: myName() });
+};
+$('again').onclick = () => send({ type: 'again' });
+$('leave').onclick = () => { send({ type: 'leave' }); resetToLobby(); };
 $('copy').onclick = async () => {
-  const link = location.origin+location.pathname+'?code='+state.code;
-  try { await navigator.clipboard.writeText(link); $('copy').textContent='Copied!'; }
+  const link = location.origin + location.pathname + '?code=' + state.code;
+  try { await navigator.clipboard.writeText(link); $('copy').textContent = 'Copied!'; }
   catch { prompt('Copy this link:', link); }
-  setTimeout(()=>$('copy').textContent='Copy invite link',1500);
+  setTimeout(() => $('copy').textContent = 'Copy invite link', 1500);
 };
 connect();
 </script>
 </body>
 </html>
+ 
