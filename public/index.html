@@ -1,5 +1,3 @@
-
-Index · HTML
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -42,6 +40,21 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
 .conn{background:var(--win);text-align:center;padding:8px;border-radius:10px;margin:0 0 12px;font-size:14px}
 .conf{position:fixed;top:-14px;width:8px;height:12px;z-index:9;pointer-events:none;animation:fall 2.2s linear forwards}
 @keyframes fall{to{transform:translateY(110vh) rotate(720deg)}}
+.timer{height:8px;border-radius:6px;background:var(--line);overflow:hidden;margin:0 0 6px}
+#tbar{height:100%;width:100%;background:var(--o);transition:width .2s linear}
+#tbar.low{background:var(--x)}
+.tlabel{text-align:center;font-size:13px;color:var(--mut);margin-bottom:10px;min-height:16px}
+.chk{display:flex;gap:8px;align-items:center;margin:0 0 12px;font-size:15px}
+.chk input{width:auto;margin:0}
+.chat{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;margin-bottom:14px}
+#chatlog{max-height:150px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:8px;font-size:14px}
+.msg{padding:6px 10px;border-radius:12px;background:var(--bg);max-width:85%;word-break:break-word}
+.msg.me{align-self:flex-end;background:var(--acc);color:var(--accink)}
+.msg b{font-size:12px;opacity:.7;display:block}
+.msg.sys{align-self:center;background:transparent;color:var(--mut);font-size:12px;text-align:center}
+.chatrow{display:flex;gap:8px}
+.chatrow input{margin:0}
+.chatrow button{width:auto}
 @media (prefers-reduced-motion:reduce){.cell.pop,.cell.win,.conf{animation:none}}
 </style>
 </head>
@@ -53,15 +66,16 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
 </div>
 <p id="conn" class="conn hide">Connection lost. Reconnecting…</p>
 <p id="err" class="err hide"></p>
- 
+
 <section id="lobby" class="card">
   <input id="nameIn" maxlength="16" placeholder="Your name" autocomplete="nickname">
+  <label class="chk"><input type="checkbox" id="timedIn"> ⏱ Timed mode (10 seconds per move)</label>
   <button id="create" disabled>Create new game</button>
   <div class="or">or join a friend's game</div>
   <input id="codeIn" maxlength="4" placeholder="CODE" autocomplete="off">
   <button id="join" class="ghost" disabled>Join game</button>
 </section>
- 
+
 <section id="game" class="hide">
   <div class="card">
     <div class="mut">Game code — share it with your friend</div>
@@ -70,13 +84,18 @@ input#codeIn{text-transform:uppercase;letter-spacing:4px;text-align:center;font-
     <div class="score"><span style="color:var(--x)" id="sx"></span><span style="color:var(--o)" id="so"></span></div>
     <div class="mut" id="you" style="margin-bottom:8px"></div>
     <div class="status" id="status"></div>
+    <div id="timerWrap" class="hide"><div class="timer"><div id="tbar"></div></div><div class="tlabel" id="tlabel"></div></div>
     <div class="board" id="board"></div>
     <button id="again" class="hide">Ask for rematch</button>
+  </div>
+  <div class="chat">
+    <div id="chatlog" aria-live="polite"></div>
+    <div class="chatrow"><input id="chatIn" maxlength="200" placeholder="Say something…" autocomplete="off"><button id="chatSend">Send</button></div>
   </div>
   <button id="leave" class="ghost">Leave game</button>
 </section>
 </main>
- 
+
 <script>
 const $ = id => document.getElementById(id);
 const store = {
@@ -86,12 +105,12 @@ const store = {
 };
 let pid = store.get('xo_pid');
 if (!pid) { pid = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now()); store.set('xo_pid', pid); }
- 
-let ws, state = null, prev = null;
+
+let ws, state = null, prev = null, clockOffset = 0, lastTick = -1;
 let pendingCode = (new URLSearchParams(location.search).get('code') || '').toUpperCase().slice(0, 4);
 $('nameIn').value = store.get('xo_name') || '';
 if (pendingCode) $('codeIn').value = pendingCode;
- 
+
 /* ---------- sound (synthesised, no files needed) ---------- */
 let actx, muted = store.get('xo_mute') === '1';
 $('mute').textContent = muted ? '🔇' : '🔊';
@@ -114,6 +133,8 @@ function sfx(kind) {
     else if (kind === 'win') [523, 659, 784, 1047].forEach((f, i) => tone(f, i * .12, .25));
     else if (kind === 'lose') { tone(330, 0, .25, 'triangle'); tone(262, .25, .4, 'triangle'); }
     else if (kind === 'draw') { tone(392, 0, .2); tone(392, .22, .3); }
+    else if (kind === 'chat') tone(880, 0, .08, 'sine', .08);
+    else if (kind === 'tick') tone(1000, 0, .06, 'square', .05);
   } catch {}
 }
 function confetti() {
@@ -128,14 +149,14 @@ function confetti() {
     setTimeout(() => s.remove(), 3200);
   }
 }
- 
+
 /* ---------- connection ---------- */
 function err(t) { const e = $('err'); if (!t) { e.classList.add('hide'); return; } e.textContent = t; e.classList.remove('hide'); }
 function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 function myName() { return $('nameIn').value.trim(); }
 function showGame(on) { $('game').classList.toggle('hide', !on); $('lobby').classList.toggle('hide', on); }
 function resetToLobby() {
-  store.del('xo_code'); state = null; prev = null; showGame(false);
+  store.del('xo_code'); state = null; prev = null; showGame(false); $('chatlog').innerHTML = '';
   history.replaceState(null, '', location.pathname);
 }
 function connect() {
@@ -151,7 +172,9 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.type === 'error') { if (m.gone) resetToLobby(); err(m.message); }
     else if (m.type === 'left') { resetToLobby(); err('Your friend left the game.'); }
-    else if (m.type === 'state') { err(''); store.set('xo_code', m.code); prev = state; state = m; render(); }
+    else if (m.type === 'state') { err(''); store.set('xo_code', m.code); clockOffset = m.now - Date.now(); prev = state; state = m; render(); }
+    else if (m.type === 'chatlog') { $('chatlog').innerHTML = ''; m.log.forEach(addMsg); }
+    else if (m.type === 'chat') { addMsg(m.msg); if (state && m.msg.mark && m.msg.mark !== state.you) sfx('chat'); }
   };
   ws.onclose = () => {
     $('conn').classList.remove('hide');
@@ -160,7 +183,7 @@ function connect() {
     setTimeout(connect, 1500);
   };
 }
- 
+
 /* ---------- drawing the game ---------- */
 function render() {
   const s = state, me = s.you, opp = me === 'X' ? 'O' : 'X';
@@ -170,12 +193,13 @@ function render() {
   $('code').textContent = s.code;
   $('sx').textContent = (s.names.X || '…') + ' (X): ' + s.scores.X;
   $('so').textContent = (s.names.O || '…') + ' (O): ' + s.scores.O;
-  $('you').textContent = 'You are ' + me;
- 
+  $('you').textContent = 'You are ' + me + (s.timed ? ' · ⏱ timed mode' : '');
+  lastTick = -1;
+
   const same = prev && prev.code === s.code;
   const newIdx = new Set();
   if (same) s.board.forEach((v, i) => { if (v && !prev.board[i]) newIdx.add(i); });
- 
+
   const bd = $('board'); bd.innerHTML = '';
   s.board.forEach((v, i) => {
     const b = document.createElement('button');
@@ -185,7 +209,7 @@ function render() {
     b.onclick = () => send({ type: 'move', index: i });
     bd.appendChild(b);
   });
- 
+
   let t;
   if (!s.full) t = 'Waiting for your friend to join…';
   else if (s.winner === 'draw') t = 'It’s a draw';
@@ -193,13 +217,15 @@ function render() {
   else if (!s.online[opp]) t = oppName + ' disconnected — waiting for them to come back…';
   else t = s.turn === me ? 'Your turn' : oppName + '’s turn';
   $('status').textContent = t;
- 
+  $('timerWrap').classList.toggle('hide', !s.timed);
+  updateTimer();
+
   const ag = $('again');
   ag.classList.toggle('hide', !s.winner);
   if (s.rematch[me]) { ag.textContent = 'Waiting for ' + oppName + '…'; ag.disabled = true; }
   else if (s.rematch[opp]) { ag.textContent = oppName + ' wants a rematch — Accept'; ag.disabled = !live; }
   else { ag.textContent = 'Ask for rematch'; ag.disabled = !live; }
- 
+
   if (same) {
     newIdx.forEach(i => sfx(s.board[i]));
     if (!prev.full && s.full) sfx('join');
@@ -210,10 +236,44 @@ function render() {
     }
   }
 }
- 
+
+/* ---------- chat + timer ---------- */
+function addMsg(m) {
+  const log = $('chatlog'), d = document.createElement('div');
+  if (m.sys) { d.className = 'msg sys'; d.textContent = m.text; }
+  else {
+    d.className = 'msg' + (state && m.mark === state.you ? ' me' : '');
+    const b = document.createElement('b'); b.textContent = m.name; d.appendChild(b);
+    d.appendChild(document.createTextNode(m.text));
+  }
+  log.appendChild(d);
+  while (log.children.length > 50) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+function updateTimer() {
+  const s = state;
+  if (!s || !s.timed) return;
+  const bar = $('tbar'), lab = $('tlabel');
+  if (!s.deadline || s.winner) {
+    bar.style.width = '100%'; bar.classList.remove('low');
+    lab.textContent = s.winner || !s.full ? '' : 'Timer paused';
+    return;
+  }
+  const rem = Math.max(0, s.deadline - (Date.now() + clockOffset));
+  bar.style.width = (rem / s.turnMs * 100) + '%';
+  bar.classList.toggle('low', rem <= 3000);
+  const secs = Math.ceil(rem / 1000);
+  lab.textContent = (s.turn === s.you ? 'Your move: ' : (s.names[s.turn] || 'Friend') + ': ') + secs + 's';
+  if (s.turn === s.you && secs <= 3 && secs > 0 && secs !== lastTick) { lastTick = secs; sfx('tick'); }
+}
+setInterval(updateTimer, 200);
+function sendChat() { const t = $('chatIn').value.trim(); if (!t) return; send({ type: 'chat', text: t }); $('chatIn').value = ''; }
+$('chatSend').onclick = sendChat;
+$('chatIn').onkeydown = e => { if (e.key === 'Enter') sendChat(); };
+
 /* ---------- buttons ---------- */
 function needName() { if (!myName()) { err('Enter your name first.'); $('nameIn').focus(); return true; } store.set('xo_name', myName()); return false; }
-$('create').onclick = () => { if (!needName()) send({ type: 'create', pid, name: myName() }); };
+$('create').onclick = () => { if (!needName()) send({ type: 'create', pid, name: myName(), timed: $('timedIn').checked }); };
 $('join').onclick = () => {
   if (needName()) return;
   const c = $('codeIn').value.trim().toUpperCase();
@@ -232,4 +292,3 @@ connect();
 </script>
 </body>
 </html>
- 
